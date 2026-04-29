@@ -1,6 +1,7 @@
 # Multi-stage Dockerfile for qBittorrent-nox
 # Based on official: https://github.com/qbittorrent/docker-qbittorrent-nox
-# Builds qbittorrent-nox from source with libtorrent-rasterbar
+# Compatible with linuxserver/qbittorrent environment variables
+# Supports: PUID, PGID, TZ, WEBUI_PORT, TORRENTING_PORT, UMASK
 
 # ============================================================
 # Base image: runtime dependencies
@@ -10,20 +11,25 @@ FROM alpine:latest AS base
 RUN \
   apk --no-cache --update-cache upgrade
 
-# Runtime dependencies
+# Runtime dependencies (matching linuxserver/qbittorrent)
 RUN \
   apk --no-cache add \
     7zip \
     bash \
     curl \
     doas \
+    grep \
+    icu-libs \
     libcrypto3 \
     libssl3 \
+    p7zip \
     python3 \
     qt6-qtbase \
     qt6-qtbase-sqlite \
+    shadow \
     tini \
     tzdata \
+    unzip \
     zlib
 
 # ============================================================
@@ -119,10 +125,16 @@ RUN \
   cat /sbom.txt
 
 # ============================================================
-# Runtime image
+# Runtime image (linuxserver/qbittorrent compatible)
 # ============================================================
 FROM base
 
+# Environment settings (matching linuxserver/qbittorrent)
+ENV HOME="/config" \
+    XDG_CONFIG_HOME="/config" \
+    XDG_DATA_HOME="/config"
+
+# Create user and configure doas
 RUN \
   adduser \
     -D \
@@ -132,12 +144,17 @@ RUN \
     qbtUser && \
   echo "permit nopass :root" >> "/etc/doas.d/doas.conf"
 
+# Copy binary and SBOM from builder
 COPY --from=builder /usr/bin/qbittorrent-nox /usr/bin/qbittorrent-nox
 COPY --from=builder /sbom.txt /sbom.txt
 
-# Create default directories
-RUN mkdir -p /downloads /config && \
-    chown qbtUser:qbtUser /downloads /config
+# Copy default config and entrypoint
+COPY root/ /
+
+# Set entrypoint permissions
+RUN chmod +x /entrypoint.sh && \
+    mkdir -p /defaults /config /downloads && \
+    chown -R qbtUser:qbtUser /config /downloads
 
 VOLUME ["/config", "/downloads"]
 
@@ -147,5 +164,4 @@ EXPOSE 8080
 # BitTorrent listening port
 EXPOSE 6881 6881/udp
 
-ENTRYPOINT ["/sbin/tini", "-g", "--"]
-CMD ["qbittorrent-nox", "--webui-port=8080"]
+ENTRYPOINT ["/sbin/tini", "-g", "--", "/entrypoint.sh"]
