@@ -19,6 +19,8 @@ ENV BOOST_PATH=/opt/boost
 ENV LIBTORRENT_PATH=/tmp/libtorrent
 
 # Install build dependencies
+# Note: Qt tools (lupdate, lrelease) need runtime libs like libglib2.0-0,
+# libxkbcommon0, libdbus-1-3, libxcb1, libxcb-cursor0, libgl1, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -31,6 +33,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     python3-pip \
     python3-venv \
+    libglib2.0-0 \
+    libxkbcommon0 \
+    libdbus-1-3 \
+    libxcb1 \
+    libxcb-cursor0 \
+    libgl1 \
+    libegl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Boost (headers only), matching CI approach
@@ -100,7 +109,6 @@ RUN CXXFLAGS="-D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -DQT_FORCE_ASSERTS" \
         -DSTACKTRACE=OFF \
         -DTESTING=OFF \
         -DVERBOSE_CONFIGURE=ON \
-    && cmake --build build --target qbt_update_translations \
     && cmake --build build \
     && DESTDIR=/tmp/install cmake --install build
 
