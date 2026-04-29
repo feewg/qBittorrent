@@ -125,7 +125,7 @@ COPY --from=builder /opt/Qt/6.6.3/gcc_64/plugins/ /usr/lib/qt6/plugins/
 
 # Set Qt environment
 ENV QT_PLUGIN_PATH=/usr/lib/qt6/plugins
-ENV LD_LIBRARY_PATH=/usr/lib/qt6/lib:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/lib/qt6/lib
 ENV QPA_PLATFORM=offscreen
 
 # Copy the built qbittorrent-nox

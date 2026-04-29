@@ -2,7 +2,6 @@
 .github
 .tx
 build
-cmake
 doc
 dist/mac
 dist/windows
