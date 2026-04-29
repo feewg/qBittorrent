@@ -1,163 +1,145 @@
 # Multi-stage Dockerfile for qBittorrent-nox
+# Based on official: https://github.com/qbittorrent/docker-qbittorrent-nox
 # Builds qbittorrent-nox from source with libtorrent-rasterbar
-# Reference: .github/workflows/ci_ubuntu.yaml
 
 # ============================================================
-# Build stage: compile qBittorrent-nox with all dependencies
+# Base image: runtime dependencies
 # ============================================================
-FROM ubuntu:24.04 AS builder
+FROM alpine:latest AS base
 
-ARG LIBTORRENT_VERSION=2.0.11
-ARG BOOST_MAJOR=1
-ARG BOOST_MINOR=77
-ARG BOOST_PATCH=0
-ARG QT_VERSION=6.6.3
-ARG CMAKE_BUILD_TYPE=RelWithDebInfo
+RUN \
+  apk --no-cache --update-cache upgrade
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV BOOST_PATH=/opt/boost
-ENV LIBTORRENT_PATH=/tmp/libtorrent
-
-# Install build dependencies
-# Note: Qt tools (lupdate, lrelease) need runtime libs like libglib2.0-0,
-# libxkbcommon0, libdbus-1-3, libxcb1, libxcb-cursor0, libgl1, etc.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    ninja-build \
-    git \
+# Runtime dependencies
+RUN \
+  apk --no-cache add \
+    7zip \
+    bash \
     curl \
-    ca-certificates \
-    libssl-dev \
-    zlib1g-dev \
-    pkg-config \
-    python3-pip \
-    python3-venv \
-    libglib2.0-0 \
-    libxkbcommon0 \
-    libdbus-1-3 \
-    libxcb1 \
-    libxcb-cursor0 \
-    libgl1 \
-    libegl1 \
-    && rm -rf /var/lib/apt/lists/*
+    doas \
+    libcrypto3 \
+    libssl3 \
+    python3 \
+    qt6-qtbase \
+    qt6-qtbase-sqlite \
+    tini \
+    tzdata \
+    zlib
 
-# Install Boost (headers only), matching CI approach
-RUN BOOST_VERSION="${BOOST_MAJOR}.${BOOST_MINOR}.${BOOST_PATCH}" \
-    && boost_underscore="${BOOST_MAJOR}_${BOOST_MINOR}_${BOOST_PATCH}" \
-    && boost_url="https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${boost_underscore}.tar.gz" \
-    && boost_url2="https://sourceforge.net/projects/boost/files/boost/${BOOST_VERSION}/boost_${boost_underscore}.tar.gz" \
-    && set +e \
-    && curl -L -o /tmp/boost.tar.gz "$boost_url" \
-    && tar -xf /tmp/boost.tar.gz -C /tmp; _exitCode=$? \
-    && if [ "$_exitCode" -ne 0 ]; then \
-        curl -L -o /tmp/boost.tar.gz "$boost_url2" \
-        && tar -xf /tmp/boost.tar.gz -C /tmp; \
-    fi \
-    && mv "/tmp/boost_${boost_underscore}" "${BOOST_PATH}" \
-    && cd "${BOOST_PATH}" \
-    && ./bootstrap.sh \
-    && ./b2 stage --stagedir=./ --with-headers \
-    && rm -f /tmp/boost.tar.gz
+# ============================================================
+# Builder image: compile qBittorrent-nox
+# ============================================================
+FROM base AS builder
 
-# Install Qt6 via aqtinstall (same backend as jurplel/install-qt-action used in CI)
-ENV QT_PATH=/opt/Qt
-RUN python3 -m venv /tmp/aqt-venv \
-    && . /tmp/aqt-venv/bin/activate \
-    && pip install aqtinstall \
-    && aqt install-qt linux desktop "${QT_VERSION}" -O "${QT_PATH}" \
-        -m qtimageformats \
-        --archives qtbase qtdeclarative qtsvg qttools icu \
-    && deactivate \
-    && rm -rf /tmp/aqt-venv
+ARG BOOST_VERSION_MAJOR="1"
+ARG BOOST_VERSION_MINOR="86"
+ARG BOOST_VERSION_PATCH="0"
+ARG LIBBT_VERSION="v2.0.11"
+ARG LIBBT_CMAKE_FLAGS=""
 
-ENV Qt6_DIR="${QT_PATH}/${QT_VERSION}/gcc_64"
-ENV PATH="${Qt6_DIR}/bin:${PATH}"
+# Build dependencies (matching Alpine aports community/qbittorrent APKBUILD)
+RUN \
+  apk add \
+    cmake \
+    git \
+    g++ \
+    make \
+    ninja \
+    openssl-dev \
+    qt6-qtbase-dev \
+    qt6-qtbase-private-dev \
+    qt6-qttools-dev \
+    zlib-dev
 
-# Build and install libtorrent (static), matching CI approach
-RUN git clone \
-    --branch "v${LIBTORRENT_VERSION}" \
+# Compiler/linker hardening flags (matching official Dockerfile)
+ENV CFLAGS="-pipe -fstack-clash-protection -fstack-protector-strong -fno-plt -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS" \
+    CXXFLAGS="-pipe -fstack-clash-protection -fstack-protector-strong -fno-plt -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS" \
+    LDFLAGS="-gz -Wl,-O1,--as-needed,--sort-common,-z,now,-z,pack-relative-relocs,-z,relro"
+
+# Build and install Boost (headers only)
+RUN \
+  wget -O boost.tar.gz "https://archives.boost.io/release/${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}/source/boost_${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}.tar.gz" && \
+  tar -xf boost.tar.gz && \
+  mv boost_* boost && \
+  cd boost && \
+  ./bootstrap.sh && \
+  ./b2 stage --stagedir=./ --with-headers
+
+# Build and install libtorrent (static)
+RUN \
+  git clone \
+    --branch "${LIBBT_VERSION}" \
     --depth 1 \
     --recurse-submodules \
-    https://github.com/arvidn/libtorrent.git \
-    "${LIBTORRENT_PATH}" \
-    && cd "${LIBTORRENT_PATH}" \
-    && CXXFLAGS="-D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS" \
-    cmake -B build -G "Ninja" \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-        -DCMAKE_CXX_STANDARD=20 \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-        -DBOOST_ROOT="${BOOST_PATH}/lib/cmake" \
-        -Ddeprecated-functions=OFF \
-    && cmake --build build \
-    && cmake --install build \
-    && rm -rf "${LIBTORRENT_PATH}"
+    https://github.com/arvidn/libtorrent.git && \
+  cd libtorrent && \
+  cmake \
+    -B build \
+    -G Ninja \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_CXX_STANDARD=20 \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+    -DBOOST_ROOT=/boost/lib/cmake \
+    -Ddeprecated-functions=OFF \
+    ${LIBBT_CMAKE_FLAGS} && \
+  cmake --build build -j "$(nproc)" && \
+  cmake --install build
 
-# Build qBittorrent-nox (GUI=OFF), matching CI approach
+# Build and install qBittorrent-nox from local source
 COPY . /src/qbittorrent
 WORKDIR /src/qbittorrent
 
-RUN CXXFLAGS="-D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -DQT_FORCE_ASSERTS" \
-    cmake -B build -G "Ninja" \
-        -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-        -DBOOST_ROOT="${BOOST_PATH}/lib/cmake" \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-        -DGUI=OFF \
-        -DWEBUI=ON \
-        -DSTACKTRACE=OFF \
-        -DTESTING=OFF \
-        -DVERBOSE_CONFIGURE=ON \
-    && cmake --build build \
-    && DESTDIR=/tmp/install cmake --install build
+RUN \
+  cmake \
+    -B build \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+    -DBOOST_ROOT=/boost/lib/cmake \
+    -DGUI=OFF && \
+  cmake --build build -j "$(nproc)" && \
+  cmake --install build
+
+# Verify binary dependencies
+RUN \
+  ldd /usr/bin/qbittorrent-nox | sort -f
+
+# Record compile-time Software Bill of Materials
+RUN \
+  printf "Software Bill of Materials for building qbittorrent-nox\n\n" > /sbom.txt && \
+  echo "boost ${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}" >> /sbom.txt && \
+  cd /libtorrent && \
+  echo "libtorrent-rasterbar git $(git rev-parse HEAD)" >> /sbom.txt && \
+  echo "qBittorrent local source build" >> /sbom.txt && \
+  echo >> /sbom.txt && \
+  apk list -I | sort >> /sbom.txt && \
+  cat /sbom.txt
 
 # ============================================================
-# Runtime stage: minimal image with qbittorrent-nox binary + Qt runtime
+# Runtime image
 # ============================================================
-FROM ubuntu:24.04 AS runtime
+FROM base
 
-ENV DEBIAN_FRONTEND=noninteractive
+RUN \
+  adduser \
+    -D \
+    -H \
+    -s /sbin/nologin \
+    -u 1000 \
+    qbtUser && \
+  echo "permit nopass :root" >> "/etc/doas.d/doas.conf"
 
-# Install minimal runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3t64 \
-    zlib1g \
-    ca-certificates \
-    tini \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy Qt runtime libraries from builder
-COPY --from=builder /opt/Qt/6.6.3/gcc_64/lib/ /usr/lib/qt6/lib/
-COPY --from=builder /opt/Qt/6.6.3/gcc_64/plugins/ /usr/lib/qt6/plugins/
-
-# Set Qt environment
-ENV QT_PLUGIN_PATH=/usr/lib/qt6/plugins
-ENV LD_LIBRARY_PATH=/usr/lib/qt6/lib
-ENV QPA_PLATFORM=offscreen
-
-# Copy the built qbittorrent-nox
-COPY --from=builder /tmp/install/usr/bin/qbittorrent-nox /usr/bin/qbittorrent-nox
-
-# Verify the binary works
-RUN qbittorrent-nox -v
-
-# Create a non-root user
-RUN groupadd -g 1000 qbtuser \
-    && useradd -u 1000 -g qbtuser -m -s /bin/bash qbtuser
+COPY --from=builder /usr/bin/qbittorrent-nox /usr/bin/qbittorrent-nox
+COPY --from=builder /sbom.txt /sbom.txt
 
 # Create default directories
-RUN mkdir -p /home/qbtuser/.config/qBittorrent \
-    && mkdir -p /downloads \
-    && chown -R qbtuser:qbtuser /home/qbtuser /downloads
+RUN mkdir -p /downloads /config && \
+    chown qbtUser:qbtUser /downloads /config
 
-# Accept legal notice so WebUI works immediately
-RUN printf '[LegalNotice]\nAccepted=true\n' > /home/qbtuser/.config/qBittorrent/qBittorrent.conf \
-    && chown qbtuser:qbtuser /home/qbtuser/.config/qBittorrent/qBittorrent.conf
-
-VOLUME ["/downloads", "/home/qbtuser/.config/qBittorrent"]
-
-USER qbtuser
+VOLUME ["/config", "/downloads"]
 
 # WebUI default port
 EXPOSE 8080
@@ -165,5 +147,5 @@ EXPOSE 8080
 # BitTorrent listening port
 EXPOSE 6881 6881/udp
 
-ENTRYPOINT ["tini", "--"]
+ENTRYPOINT ["/sbin/tini", "-g", "--"]
 CMD ["qbittorrent-nox", "--webui-port=8080"]

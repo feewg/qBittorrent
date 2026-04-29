@@ -1,17 +1,1 @@
 .git
-.github
-.tx
-build
-doc
-dist/mac
-dist/windows
-*.md
-!README.md
-.editorconfig
-.gitattributes
-.gitignore
-.pre-commit-config.yaml
-.clang-tidy
-codingStyleQtCreator.xml
-build_dist.sh
-5B7CC9A2.asc

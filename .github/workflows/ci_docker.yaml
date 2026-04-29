@@ -52,17 +52,12 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Tag with branch name on push to branch
             type=ref,event=branch
-            # Tag with semver on push to tag (e.g., v5.3.0 -> 5.3.0)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # Tag with PR number
             type=ref,event=pr
-            # Always tag with short SHA
             type=sha,prefix=
-            # Tag "latest" for the default branch
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
@@ -77,16 +72,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            LIBTORRENT_VERSION=2.0.11
-            BOOST_MAJOR=1
-            BOOST_MINOR=77
-            BOOST_PATCH=0
-            QT_VERSION=6.6.3
-            CMAKE_BUILD_TYPE=RelWithDebInfo
+            LIBBT_VERSION=v2.0.11
+            BOOST_VERSION_MAJOR=1
+            BOOST_VERSION_MINOR=86
+            BOOST_VERSION_PATCH=0
           platforms: linux/amd64
 
       - name: Verify Docker image
         if: github.event_name == 'pull_request'
         run: |
-          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}"
-          docker run --rm "$IMAGE_TAG" qbittorrent-nox -v
+          docker run --rm "$(docker images --format '{{.Repository}}:{{.Tag}}' | head -1)" qbittorrent-nox -v
