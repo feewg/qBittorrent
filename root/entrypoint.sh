@@ -1,38 +1,43 @@
 #!/bin/sh
-# Entrypoint script compatible with linuxserver/qbittorrent environment variables
+# Entrypoint script compatible with linuxserver/qbittorrent
 # Supports: PUID, PGID, TZ, WEBUI_PORT, TORRENTING_PORT, UMASK
 
 set -e
 
 # ============================
+# Configure user/group (PUID/PGID)
+# Matching linuxserver baseimage init-adduser behavior
+# ============================
+PUID=${PUID:-911}
+PGID=${PGID:-911}
+
+# Get current IDs of abc user
+CURRENT_UID=$(id -u abc)
+CURRENT_GID=$(id -g abc)
+
+# linuxserver does: temporarily change home to /root, modify ids, then change back
+# This avoids issues with home directory ownership
+USERHOME=$(grep abc /etc/passwd | cut -d ":" -f6)
+usermod -d "/root" abc
+
+if [ "${CURRENT_GID}" != "${PGID}" ]; then
+    groupmod -o -g "${PGID}" abc
+fi
+
+if [ "${CURRENT_UID}" != "${PUID}" ]; then
+    usermod -o -u "${PUID}" abc
+fi
+
+usermod -d "${USERHOME}" abc
+
+# ============================
 # Configure timezone
 # ============================
 if [ -n "${TZ}" ]; then
-    # On Alpine, configure timezone
     if [ -f "/usr/share/zoneinfo/${TZ}" ]; then
         cp "/usr/share/zoneinfo/${TZ}" /etc/localtime
         echo "${TZ}" > /etc/timezone
     fi
-fi
-
-# ============================
-# Configure user/group (PUID/PGID)
-# ============================
-PUID=${PUID:-1000}
-PGID=${PGID:-1000}
-
-# Get current IDs of qbtUser
-CURRENT_UID=$(id -u qbtUser)
-CURRENT_GID=$(id -g qbtUser)
-
-# Update group ID if needed
-if [ "${CURRENT_GID}" != "${PGID}" ]; then
-    groupmod -o -g "${PGID}" qbtUser
-fi
-
-# Update user ID if needed
-if [ "${CURRENT_UID}" != "${PUID}" ]; then
-    usermod -o -u "${PUID}" qbtUser
 fi
 
 # ============================
@@ -43,59 +48,52 @@ if [ -n "${UMASK}" ]; then
 fi
 
 # ============================
-# Set up default config
+# Set up qBittorrent config
+# Matching linuxserver init-qbittorrent-config behavior
 # ============================
-QBT_CONFIG_DIR="/config/qBittorrent"
-QBT_CONFIG_FILE="${QBT_CONFIG_DIR}/qBittorrent.conf"
-
-# Create config directories
-mkdir -p "${QBT_CONFIG_DIR}"
-mkdir -p /downloads
+mkdir -p /config/qBittorrent
 
 # Copy default config if not present (first run)
-if [ ! -f "${QBT_CONFIG_FILE}" ]; then
-    if [ -f "/defaults/qBittorrent.conf" ]; then
-        cp /defaults/qBittorrent.conf "${QBT_CONFIG_FILE}"
+if [ ! -f /config/qBittorrent/qBittorrent.conf ]; then
+    if [ -f /defaults/qBittorrent.conf ]; then
+        cp /defaults/qBittorrent.conf /config/qBittorrent/qBittorrent.conf
     fi
 fi
 
-# Update WebUI port in config if WEBUI_PORT is set
-if [ -n "${WEBUI_PORT}" ]; then
-    if [ -f "${QBT_CONFIG_FILE}" ]; then
-        sed -i "s|^WebUI\\\\Port=.*|WebUI\\\\Port=${WEBUI_PORT}|" "${QBT_CONFIG_FILE}" 2>/dev/null || true
-    fi
+# Set ownership (matching linuxserver behavior)
+chown abc:abc /app 2>/dev/null || true
+chown abc:abc /config
+chown abc:abc /defaults 2>/dev/null || true
+
+# Only chown /downloads mount point (not recursively, matching linuxserver)
+if grep -qe ' /downloads ' /proc/mounts 2>/dev/null; then
+    chown abc:abc /downloads 2>/dev/null || true
 fi
 
-# Update torrenting port in config if TORRENTING_PORT is set
-if [ -n "${TORRENTING_PORT}" ]; then
-    if [ -f "${QBT_CONFIG_FILE}" ]; then
-        sed -i "s|^Connection\\\\PortRangeMin=.*|Connection\\\\PortRangeMin=${TORRENTING_PORT}|" "${QBT_CONFIG_FILE}" 2>/dev/null || true
-    fi
-fi
+chown -R abc:abc /config/qBittorrent
 
 # ============================
-# Fix permissions
+# Print user info (matching linuxserver output)
 # ============================
-# Ensure qbtUser owns config and downloads
-chown -R qbtUser:qbtUser /config
-chown -R qbtUser:qbtUser /downloads 2>/dev/null || true
-
-# ============================
-# Determine WebUI port
-# ============================
-WEBUI_PORT=${WEBUI_PORT:-8080}
-
-# Build qbittorrent-nox command arguments
-QBT_ARGS="--webui-port=${WEBUI_PORT}"
-
-if [ -n "${TORRENTING_PORT}" ]; then
-    QBT_ARGS="${QBT_ARGS} --torrenting-port=${TORRENTING_PORT}"
-fi
+echo "
+-------------------------------------
+GID/UID
+-------------------------------------
+User UID: $(id -u abc)
+User GID: $(id -g abc)
+-------------------------------------
+"
 
 # ============================
 # Start qbittorrent-nox
 # ============================
-echo "Starting qBittorrent-nox with PUID=${PUID}, PGID=${PGID}, WEBUI_PORT=${WEBUI_PORT}"
-echo "Config: ${QBT_CONFIG_FILE}"
+WEBUI_PORT=${WEBUI_PORT:-8080}
 
-exec doas -u qbtUser qbittorrent-nox ${QBT_ARGS}
+QBT_ARGS="--webui-port=${WEBUI_PORT}"
+if [ -n "${TORRENTING_PORT}" ]; then
+    QBT_ARGS="${QBT_ARGS} --torrenting-port=${TORRENTING_PORT}"
+fi
+
+echo "Starting qBittorrent-nox --webui-port=${WEBUI_PORT}${TORRENTING_PORT:+ --torrenting-port=${TORRENTING_PORT}}"
+
+exec su-exec abc qbittorrent-nox ${QBT_ARGS}

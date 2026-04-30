@@ -1,6 +1,5 @@
 # Multi-stage Dockerfile for qBittorrent-nox
-# Based on official: https://github.com/qbittorrent/docker-qbittorrent-nox
-# Compatible with linuxserver/qbittorrent environment variables
+# Build from source, runtime compatible with linuxserver/qbittorrent
 # Supports: PUID, PGID, TZ, WEBUI_PORT, TORRENTING_PORT, UMASK
 
 # ============================================================
@@ -11,26 +10,42 @@ FROM alpine:latest AS base
 RUN \
   apk --no-cache --update-cache upgrade
 
-# Runtime dependencies (matching linuxserver/qbittorrent)
+# Runtime dependencies (matching linuxserver/qbittorrent + baseimage)
 RUN \
   apk --no-cache add \
     7zip \
     bash \
+    ca-certificates \
+    catatonit \
+    coreutils \
     curl \
-    doas \
+    findutils \
     grep \
     icu-libs \
-    libcrypto3 \
-    libssl3 \
+    jq \
+    netcat-openbsd \
     p7zip \
+    procps-ng \
     python3 \
     qt6-qtbase \
     qt6-qtbase-sqlite \
     shadow \
+    su-exec \
     tini \
     tzdata \
     unzip \
     zlib
+
+# Create abc user matching linuxserver baseimage defaults
+# abc user: UID=911, GID=911, home=/config
+RUN \
+  groupmod -g 1000 users && \
+  useradd -u 911 -U -d /config -s /bin/false abc && \
+  usermod -G users abc && \
+  mkdir -p \
+    /app \
+    /config \
+    /defaults
 
 # ============================================================
 # Builder image: compile qBittorrent-nox
@@ -43,12 +58,12 @@ ARG BOOST_VERSION_PATCH="0"
 ARG LIBBT_VERSION="v2.0.11"
 ARG LIBBT_CMAKE_FLAGS=""
 
-# Build dependencies (matching Alpine aports community/qbittorrent APKBUILD)
+# Build dependencies
 RUN \
   apk add \
     cmake \
-    git \
     g++ \
+    git \
     make \
     ninja \
     openssl-dev \
@@ -57,7 +72,7 @@ RUN \
     qt6-qttools-dev \
     zlib-dev
 
-# Compiler/linker hardening flags (matching official Dockerfile)
+# Compiler/linker hardening flags
 ENV CFLAGS="-pipe -fstack-clash-protection -fstack-protector-strong -fno-plt -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS" \
     CXXFLAGS="-pipe -fstack-clash-protection -fstack-protector-strong -fno-plt -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS" \
     LDFLAGS="-gz -Wl,-O1,--as-needed,--sort-common,-z,now,-z,pack-relative-relocs,-z,relro"
@@ -134,16 +149,6 @@ ENV HOME="/config" \
     XDG_CONFIG_HOME="/config" \
     XDG_DATA_HOME="/config"
 
-# Create user and configure doas
-RUN \
-  adduser \
-    -D \
-    -H \
-    -s /sbin/nologin \
-    -u 1000 \
-    qbtUser && \
-  echo "permit nopass :root" >> "/etc/doas.d/doas.conf"
-
 # Copy binary and SBOM from builder
 COPY --from=builder /usr/bin/qbittorrent-nox /usr/bin/qbittorrent-nox
 COPY --from=builder /sbom.txt /sbom.txt
@@ -152,9 +157,7 @@ COPY --from=builder /sbom.txt /sbom.txt
 COPY root/ /
 
 # Set entrypoint permissions
-RUN chmod +x /entrypoint.sh && \
-    mkdir -p /defaults /config /downloads && \
-    chown -R qbtUser:qbtUser /config /downloads
+RUN chmod +x /entrypoint.sh
 
 VOLUME ["/config", "/downloads"]
 
